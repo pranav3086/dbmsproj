@@ -1,10 +1,11 @@
-// One command for local development: starts MySQL (port 3307), builds the database the first
-// time, then runs the API server (3001) and the website (5173). Ctrl+C stops everything.
+// One command to run the project: starts MySQL (port 3307), builds the database if it is
+// missing, then runs the website (port 3000). Ctrl+C stops everything.
 //   npm start
 import { spawn } from 'node:child_process'
 import { createConnection } from 'node:net'
 import { env } from './lib/env.mjs'
 import { rootConnection, setupDatabase } from './lib/setup.mjs'
+import { TABLES } from './lib/tables.mjs'
 
 const children = []
 const run = (name, args) => {
@@ -40,7 +41,7 @@ let stopping = false
 function stop() {
   if (stopping) return
   stopping = true
-  // Stop the web servers first, then ask MySQL for a clean shutdown.
+  // Stop the website first, then ask MySQL for a clean shutdown.
   const mysqlChild = children.find((c) => c.label === 'mysql')
   for (const c of children) if (c !== mysqlChild) c.kill()
   if (mysqlChild && mysqlChild.exitCode === null) {
@@ -61,14 +62,14 @@ if (await portOpen(env.port)) {
   for (let i = 0; i < 120 && !(await portOpen(env.port)); i++) await new Promise((r) => setTimeout(r, 500))
 }
 
+// Build the database the first time, or if it is not exactly the 8 tables.
 const conn = await rootConnection()
-const [[{ n }]] = await conn.query(`SELECT COUNT(*) AS n FROM information_schema.SCHEMATA WHERE SCHEMA_NAME = 'a10_hospital'`)
+const [found] = await conn.query(`SELECT TABLE_NAME AS name FROM information_schema.TABLES WHERE TABLE_SCHEMA = ?`, [env.database])
 await conn.end()
-if (!n) {
-  console.log('First run: building the database …')
-  await setupDatabase({ demo: true, log: console.log })
+if (found.length !== TABLES.length || !found.every((t) => TABLES.includes(t.name))) {
+  console.log('Building the database …')
+  await setupDatabase({ log: console.log })
 }
 
-run('api', ['server/index.mjs'])
-run('web', ['node_modules/vite/bin/vite.js'])
-console.log('\nA10 Hospital: open http://localhost:5173  (Ctrl+C to stop)\n')
+run('web', ['server/index.mjs'])
+console.log(`\nA10 Hospital: open http://localhost:${env.webPort}  (Ctrl+C to stop)\n`)

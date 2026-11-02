@@ -22,8 +22,6 @@ mysqlx=OFF
 skip-log-bin
 character-set-server=utf8mb4
 collation-server=utf8mb4_0900_ai_ci
-default-time-zone='+00:00'
-group_concat_max_len=1048576
 performance_schema=OFF
 innodb_buffer_pool_size=64M
 max_connections=40

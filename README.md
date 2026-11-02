@@ -1,146 +1,90 @@
-# A10 Hospital — MySQL edition
+# A10 Hospital: DBMS project (MySQL)
 
-**Exceptional Care. Thoughtfully Delivered.** A multi-portal hospital management website: a public site, a patient portal, a clinical (doctor) portal, a permission-based staff portal and an administration portal. Everything is stored in a **MySQL 8.4** database, and the database itself enforces who may see and change what.
+A hospital management database with **8 tables** (matching the ER diagram) and a simple website to
+view, insert, edit and delete rows. The website shows the exact SQL statement it ran each time.
 
-This is the MySQL version of the A10 Hospital project (the PostgreSQL original is in `../a10-hospital` and is unchanged). The website is the same; the database layer has been rebuilt for MySQL.
+| # | Table | What it stores | Keys |
+|---|-------|----------------|------|
+| 1 | `departments` | Clinical departments | PK `id`, unique `slug`, `name` |
+| 2 | `doctors` | Doctors, each in one department | PK `id`, FK `department_id` |
+| 3 | `patients` | Registered patients | PK `id`, unique `email` |
+| 4 | `appointments` | A visit between one patient and one doctor | PK `id`, unique `reference`, FKs `patient_id`, `doctor_id`, `department_id` |
+| 5 | `prescriptions` | Medicines a doctor issues; amended by a new version | PK `id`, unique `reference`, FKs `patient_id`, `doctor_id`, `appointment_id`, `supersedes_id` (self) |
+| 6 | `prescription_items` | One medicine line on a prescription (weak entity) | PK `id`, FK `prescription_id` (ON DELETE CASCADE), FK `medicine_id` |
+| 7 | `medicines` | Pharmacy catalogue | PK `id`, unique `slug` |
+| 8 | `medication_orders` | A patient's pharmacy order | PK `id`, unique `reference`, FKs `patient_id`, `prescription_id` |
 
-> **Demonstration project.** All doctors, patients, clinical records, prices and contact details are fictional sample data. No real money is collected and no emails are sent.
+CHECK constraints: fees, prices and stock can't be negative, `ends_at > starts_at`,
+`quantity > 0`, and `total = subtotal + delivery_fee`.
 
----
+**PL/SQL** (`database/plsql.sql`, no extra tables):
 
-## Quick start
+| Kind | Name | What it does |
+|------|------|--------------|
+| Function | `fn_patient_age(dob)` | Age in years |
+| Function | `fn_delivery_fee(subtotal)` | Free delivery above Rs 1000, else Rs 40 |
+| Function | `fn_doctor_earnings(doctor_id)` | Fees from completed appointments |
+| Procedure | `sp_book_appointment` | Books a slot; rejects past times and clashes |
+| Procedure | `sp_amend_prescription` | New version + copied lines; old one superseded (transaction) |
+| Procedure + cursor | `sp_place_order` | Walks the prescription lines, checks and reduces stock, rolls back if short |
+| Procedure + cursor | `sp_department_report` | Doctors, appointments and earnings per department |
+| Trigger | `trg_appointment_before_insert` | Doctor must be in that department; department must be active |
+| Trigger | `trg_appointment_before_update` | Status can only change from `booked` |
+| Trigger | `trg_prescription_before_insert` | Only an active prescription can be amended; sets the version |
+| Trigger | `trg_order_before_insert` | Computes the total; prescription must be the patient's and active |
 
-Requirements: Node.js 24, and MySQL Server 8.x installed (the scripts find it under `C:\Program Files\MySQL`).
-
-```bash
-npm install
-npm start            # starts MySQL, builds the database on first run, starts the API and the website
-```
-
-Open **http://localhost:5173**. Press **Ctrl + C** to stop everything.
-
-`npm start` runs three things, which can also be started separately:
-
-| Command | What it runs |
-|---|---|
-| `npm run db:server` | The project's **own MySQL server** on `127.0.0.1:3307`, data in `./.mysql` (separate from any other MySQL on the computer) |
-| `npm run api` | The API server on port 3001 (`server/`) |
-| `npm run dev` | The website (Vite) on port 5173, which forwards `/api` to the API server |
-
-Demo accounts share the password `DemoCare#2026`:
-
-| Account | Email |
-|---|---|
-| Patient | `patient@a10.example` (also `patient2@a10.example`) |
-| Doctor (Cardiology) | `doctor@a10.example` |
-| Doctor (General Medicine) | `gp@a10.example` |
-| Staff (appointments, patient admin, lab) | `staff@a10.example` |
-| Staff (pharmacy) | `pharmacy@a10.example` |
-| Administrator | `admin@a10.example` |
-| Doctor awaiting verification | `pending.doctor@a10.example` |
-
-Verification and password-reset emails appear in the **Demo mailbox** at `/dev/mailbox`, which also has a *Reset demo data* button.
-
-## Architecture
+## Files
 
 ```
-Browser (React)  ──HTTP /api──▶  API server (Node, server/)  ──SQL──▶  MySQL 8.4
-                                  • sign-in, session cookie          • a10_hospital: tables, triggers,
-                                  • names a view or procedure          functions, stored procedures
-                                    (never sends raw SQL)            • a10_api: security views
+database/schema.sql   CREATE TABLE statements for the 8 tables
+database/seed.sql     sample rows (INSERT statements)
+database/plsql.sql    functions, stored procedures (two with cursors) and triggers
+database/queries.sql  example queries for the review (joins, GROUP BY, subquery, UPDATE, DELETE, CALL)
+public/               the website (plain HTML, CSS, JavaScript)
+server/index.mjs      web server (Node.js + Express + mysql2)
+scripts/              start MySQL, build the database, open the MySQL shell
 ```
 
-* **Two databases.** `a10_hospital` holds the 33 base tables plus all functions, triggers and procedures. `a10_api` holds one **security view per table** (same name as the table) and the `v_*` read models.
-* **The application's MySQL account (`a10_app`) has no privileges on any table.** It may only `SELECT` from `a10_api` views and `EXECUTE` the stored procedures listed in `database/08_grants.sql`.
-* **Identity comes from the database.** For each request the API server runs `SET @app_session_token = '…'`. The function `app_uid()` looks that token up in `auth_sessions` (stored as a SHA-256 hash), so the database — not the browser or the query — decides who the caller is. A made-up token resolves to nobody.
+## Running it
 
-## The SQL (`database/`)
+Needs Node.js and MySQL Server 8.4 installed. The project runs its **own** MySQL server on port
+3307 (data in `.mysql/`), so it doesn't touch any other MySQL on the computer.
 
-| File | Contents |
-|---|---|
-| `01_schema.sql` | Tables, primary/foreign keys, `CHECK` constraints, `ENUM`s, indexes |
-| `02_functions.sql` | `app_uid()`, `has_role()`, `has_permission()`, `doctor_can_access_patient()`, audit and notification helpers, file-access rules |
-| `03_triggers.sql` | New-account bootstrap (`AFTER INSERT ON auth_users`), overlap checks, date checks, stock-movement guard |
-| `04_audit_triggers.sql` | 42 generated audit triggers (`npm run db:build-audit` regenerates them from the schema) |
-| `05_procedures.sql` | ~40 stored procedures: booking, prescriptions, lab reports, orders, donations, admin |
-| `06_auth_storage.sql` | Sign-up, sessions, one-time tokens, private file storage (`LONGBLOB`), dev mailbox |
-| `07_views.sql` | Security views (row-level access rules) and UI read models |
-| `08_grants.sql` | The application account's privileges |
-| `seed.sql` | Departments, 40 fictional doctors, medicines, donation causes (generated by `npm run db:seed:build`) |
-| `demo_fixtures.sql` | Sample appointments, prescriptions, lab reports, orders for the demo accounts |
-
-`npm run db:setup` drops and rebuilds both databases from these files (all data is replaced with fresh sample data).
-
-### How PostgreSQL features were rebuilt in MySQL
-
-| Need | PostgreSQL original | MySQL version |
-|---|---|---|
-| Row-level security | `CREATE POLICY` | Security views with the rule in `WHERE`, `SQL SECURITY DEFINER`, app account granted views only |
-| Who is the caller | `auth.uid()` from the JWT | `app_uid()` from `@app_session_token` → `auth_sessions` |
-| No double-booking | Partial unique index `WHERE status IN (…)` | Generated column `active_doctor_slot` (NULL unless active) + `UNIQUE (doctor_id, active_doctor_slot)` |
-| Trusted operations | `SECURITY DEFINER` functions | Stored procedures (definer rights), each checking `app_uid()`, run in a transaction |
-| Errors shown to users | `RAISE EXCEPTION` | `SIGNAL SQLSTATE '45000' / '42501'` |
-| Arrays (`text[]`) | Native arrays | `JSON` columns, read with `JSON_TABLE` |
-| Row audit (`to_jsonb(row)`) | One generic trigger | Generated per-table triggers building `JSON_OBJECT(...)` |
-| Mass-assignment guards | Column-comparison triggers | Procedures accept only listed fields; no direct table writes |
-| Stock changes | Guard trigger | `AFTER UPDATE` trigger refuses stock changes without a recorded reason and writes `inventory_movements` |
-
-## Working with SQL directly
-
-```bash
-npm run db:sql                                   # the real mysql client, as root, on a10_hospital
-npm run db:sql -- "SHOW TABLES"
-npm run db:sql -- "DESCRIBE appointments"
-npm run db:sql -- --as patient@a10.example       # mysql client as a10_app, signed in as that patient
-npm run db:sql -- --as patient@a10.example "SELECT reference, status FROM appointments"
-npm run db:sql -- --as admin@a10.example "SELECT COUNT(*) FROM consultations"     # 0: no clinical access
-```
-
-`--as <email>` connects as the application account with a real session for that user, on the `a10_api` views — the same path the website uses. Reading a base table from there is refused:
+**Website:** double-click `start.bat`, or run:
 
 ```
-ERROR 1142 (42000): SELECT command denied to user 'a10_app'@'localhost' for table 'appointments'
+npm install        (first time only)
+npm start
 ```
 
-You can also connect any MySQL tool (MySQL Workbench, VS Code) to `127.0.0.1`, port **3307**, user `root`, password `A10root#2026`.
+Then open http://localhost:3000. Press Ctrl+C to stop. The first run builds the database.
 
-Useful queries for a review:
+**MySQL shell:** with `npm start` running, open a second terminal:
+
+```
+npm run db:sql
+```
 
 ```sql
--- All tables and their sizes
-SELECT table_name, table_rows FROM information_schema.tables WHERE table_schema = 'a10_hospital';
--- Stored procedures, functions and triggers
-SHOW PROCEDURE STATUS WHERE Db = 'a10_hospital';
-SHOW FUNCTION STATUS WHERE Db = 'a10_hospital';
-SHOW TRIGGERS FROM a10_hospital;
--- The access rule behind a view
-SHOW CREATE VIEW a10_api.appointments;
--- What the application account may do
-SHOW GRANTS FOR 'a10_app'@'%';
+SHOW TABLES;
+DESCRIBE doctors;
+SELECT * FROM appointments;
+INSERT INTO departments (slug, name, description) VALUES ('ent', 'ENT', 'Ear, nose and throat');
+SOURCE database/queries.sql;
+exit
 ```
 
-## Security model
+## Other commands
 
-* **Roles** (`patient`, `doctor`, `staff`, `admin`) and **staff permissions** (`appointments`, `patient_admin`, `lab_records`, `pharmacy`) live in `user_roles` and `staff_permissions`. Sign-up metadata can only produce a patient role, a *pending* doctor application, or staff access backed by a valid invitation to that exact email (trigger `on_auth_user_created`).
-* **Row access** (views in `07_views.sql`): patients see only their own records and only *released* lab reports; doctors see a patient's clinical records only after that patient booked with them; staff see only what their permissions allow; administrators have **no** clinical read access.
-* **Writes** go through stored procedures that validate input and enforce state machines (appointments, prescriptions with versioned amendments, lab reports that change after finalisation only through *amended*, orders with server-side prices and stock).
-* **Audit log:** role changes, verification decisions, clinical edits and every patient-chart view are recorded in `audit_logs`, readable only by administrators.
-* **Private files** (lab documents, doctor credentials) are stored in MySQL and served only through 60-second signed links after `can_read_object()` allows it.
-* **Passwords** are hashed with scrypt; sessions are random tokens in an httpOnly cookie, stored only as hashes.
-* **Trust boundary:** the API server is trusted to verify passwords and create sessions (the `auth_*` procedures). Everything after sign-in — every read and write — is authorised inside MySQL.
+| Command | What it does |
+|---------|--------------|
+| `npm run db:server` | Start only MySQL (port 3307) |
+| `npm run web` | Start only the website (needs MySQL running) |
+| `npm run db:setup` | Rebuild the database from `schema.sql` + `seed.sql` + `plsql.sql` (**deletes all changes**) |
+| `npm run db:setup -- --empty` | Rebuild with the 8 empty tables |
+| `npm run db:sql -- "SELECT * FROM doctors"` | Run one SQL statement |
 
-This project does **not** claim compliance with any healthcare privacy law or certification.
+Logins: MySQL `root` / `A10root#2026`. The website connects as `a10_app`, which can only
+SELECT, INSERT, UPDATE and DELETE in `a10_hospital`. Change these in `.env` (see `.env.example`).
 
-## Testing
-
-```bash
-npm test             # Vitest: unit tests + 41 MySQL tests (needs `npm run db:server` running)
-npm run test:e2e     # Playwright: real browser journeys against MySQL + API + website
-npm run typecheck && npm run lint && npm run build
-```
-
-The database tests build isolated copies (`a10t_*`, `a10u_*`) and the browser tests use `a10e_*`, so your own demo data is never touched. They cover: the application account's lack of table privileges, forged session tokens, sign-up role bootstrap, mass-assignment guards, record ownership, double-booking (including the unique key itself), status transitions, atomic rescheduling, transaction rollback, clinical access scope, chart-view auditing, prescriptions and amendments, lab report rules, private file access, order totals and stock with inventory records, prescription-only items, donations, doctor approval, staff invitations, the audit trail, and the HTTP sign-up → verify → sign-in flow.
-
-## Production build
-
-`npm run build` creates `dist/`; `npm run api` then serves both the API and the built website on port 3001. For any real deployment set `DEV_TOOLS=off` and `VITE_DEMO_TOOLS=off`, use your own strong database passwords in `.env`, and put the server behind HTTPS.
+The earlier, larger version of this project is kept in git under the tag `full-version`.
